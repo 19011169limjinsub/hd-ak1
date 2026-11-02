@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserProfile, JobPosting, AnalysisResult, ActivePage } from '../types';
 import { SAMPLE_PROFILES, SAMPLE_JOB_POSTINGS } from '../mock/samples';
+import { safeApiFetch, ApiError } from '../utils/apiClient';
+import { generateClientFallbackAnalysis } from '../utils/clientAnalyzer';
 
 interface AppContextType {
   profile: UserProfile;
@@ -152,15 +154,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       document.body.classList.remove('bg-slate-950', 'text-slate-100');
     }
   }, [theme]);
-
   // Check backend health and API key on mount
   useEffect(() => {
-    fetch('/api/health')
-      .then((res) => res.json())
+    safeApiFetch('/api/health')
       .then((data) => {
-        setHasApiKey(Boolean(data.hasApiKey));
+        setHasApiKey(Boolean(data?.hasApiKey));
       })
-      .catch((e) => console.log('Backend health check error:', e));
+      .catch((e) => {
+        // On static hosting like Vercel without /api deployed yet, health returns 404
+        console.warn('[JOB FIT AI] Backend health check bypassed:', e.message);
+      });
   }, []);
 
   const setProfile = (newProfile: UserProfile) => {
@@ -270,7 +273,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 3800);
 
     try {
-      const response = await fetch('/api/analyze', {
+      const resData = await safeApiFetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -279,11 +282,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`분석 요청 실패 (${response.status})`);
-      }
-
-      const resData = await response.json();
       const rawData = resData.data;
 
       // Ensure minimal animation time for realistic experience (at least ~4.5s)
@@ -312,6 +310,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setActivePage('result');
       return finalResult;
     } catch (err: any) {
+      console.warn('[JOB FIT AI] API request encountered error:', err?.message);
+
+      // Graceful fallback for 404 (e.g. Vercel deployment without /api Serverless Functions active yet)
+      // or HTML response (e.g. Vercel 404/SPA rewrite)
+      if (err?.status === 404 || err?.isHtmlResponse || err?.code === 'NOT_FOUND_HTML') {
+        console.info('[JOB FIT AI] /api/analyze returned 404 on host. Activating instant client-side analysis engine fallback.');
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+
+        const fallbackResult = generateClientFallbackAnalysis(profile, targetJob);
+        setAnalysisResults((prev) => [fallbackResult, ...prev]);
+        setCurrentResult(fallbackResult);
+        setActivePage('result');
+        return fallbackResult;
+      }
+
       console.error('Analysis error in context:', err);
       alert('분석 중 오류가 발생했습니다: ' + (err.message || '다시 시도해주세요.'));
       setActivePage('job-input');

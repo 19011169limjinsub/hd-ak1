@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { SAMPLE_JOB_POSTINGS } from '../mock/samples';
 import { JobPosting } from '../types';
+import { safeApiFetch } from '../utils/apiClient';
 
 export const JobInputPage: React.FC = () => {
   const { jobPosting, setJobPosting, runAnalysis, theme } = useApp();
@@ -47,7 +48,7 @@ export const JobInputPage: React.FC = () => {
     }
     setIsParsing(true);
     try {
-      const res = await fetch('/api/parse-job', {
+      const data = await safeApiFetch('/api/parse-job', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -56,8 +57,7 @@ export const JobInputPage: React.FC = () => {
           roleTitle: formJob.role,
         }),
       });
-      if (!res.ok) throw new Error('추출 실패');
-      const data = await res.json();
+
       setFormJob((prev) => ({
         ...prev,
         company: data.company || prev.company,
@@ -71,6 +71,26 @@ export const JobInputPage: React.FC = () => {
       }));
       setActiveTab('structured');
     } catch (err: any) {
+      console.warn('[JOB FIT AI] /api/parse-job error, applying fallback:', err.message);
+
+      // If 404 or non-JSON, do instant client-side structuring from rawText
+      if (err?.status === 404 || err?.isHtmlResponse) {
+        const lines = formJob.rawText
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const bulletPoints = lines.filter((l) => l.startsWith('-') || l.startsWith('•') || l.startsWith('*'));
+
+        setFormJob((prev) => ({
+          ...prev,
+          summary: prev.rawText.substring(0, 150) + '...',
+          responsibilities: bulletPoints.slice(0, 3).length > 0 ? bulletPoints.slice(0, 3) : prev.responsibilities,
+          mandatorySkills: prev.mandatorySkills.length > 0 ? prev.mandatorySkills : ['관련 업무 수행 능력', '핵심 기술 스택'],
+        }));
+        setActiveTab('structured');
+        return;
+      }
+
       console.error(err);
       alert('AI 공고 구조화 중 오류가 발생했습니다: ' + err.message);
     } finally {
